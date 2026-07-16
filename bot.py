@@ -3,9 +3,14 @@ import discord
 from dotenv import load_dotenv
 from ask_llm import get_llm_response, build_conversation_history, summarize_conversation
 from collections import defaultdict, deque
+import redis
+import json
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
+
+# Redis init
+r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
 
 intents = discord.Intents.default()
 intents.message_content = True 
@@ -18,36 +23,32 @@ def get_personality_prompt(client):
             You have a good sense of humor and enjoy making the conversation enjoyable for the user.
             Your goal is to create a short but engagin response to the user's message, keeping it as short as possible."""
 
-summary_prompt = """Read the conversation between a user and ad AI agent, and summarize the content in a concise manner,
-highlighting the main points and any important details. The summary should be clear and easy to understand, providing a
-quick overview of the conversation without losing the essence of the discussion. The summary should be written in a neutral tone,
-avoiding any personal opinions or biases. It should focus on the key information exchanged during the conversation, including any
-questions asked, answers provided, and any relevant context or background information. The goal is to provide a comprehensive yet
-succinct summary that captures the essence of the conversation while remaining objective and informative."""
-
-MAX_HISTORY_THRESHOLD = 20
-SUMMARIZE_THRESHOLD = 12
-conversations = defaultdict(lambda: deque(maxlen=MAX_HISTORY_THRESHOLD))
-
 @client.event
 async def on_ready():
     print(f"Bot connected as : {client.user}")
 
 @client.event
 async def on_message(message):
-    personality = get_personality_prompt(client)
-    
+    # Ignores if bot messages
     if message.author == client.user:
-        return  # ignores bot's own messages
+        return  
+    
+    personality = get_personality_prompt(client)
+    chat_key = f"chat:friends"
+    
+    # Retrieve all messages related to this chat from Redis (history)
+    raw_history = r.lrange(chat_key, 0, -1)
+    messages = [json.loads(msg) for msg in raw_history]
 
-    # Save user message
-    user_id = message.author.id
-    messages = build_conversation_history(
-        conversations,
-        user_id,
-        message.content,
-        personality
-    )
+    # Initialization if first message
+    if not messages:
+        system_msg = {"role": "system", "content": personality}
+        r.rpush(chat_key, json.dumps(system_msg))
+
+    # Add a new user message to the conversation
+    user_msg = {"role": "user", "content": message.content}
+    r.rpush(chat_key, json.dumps(user_msg))
+    messages.append(user_msg)
 
     response = get_llm_response(
         backend_url="http://localhost:11434",
@@ -61,18 +62,10 @@ async def on_message(message):
         return
 
     # Save bot response
-    conversations[user_id].append({"role": "user", "content": message.content})
-    conversations[user_id].append({"role": "assistant", "content": response})
-
+    bot_msg = {"role": "assistant", "content": response}
+    r.rpush(chat_key, json.dumps(bot_msg))
     await message.channel.send(response)
 
-    summarize_conversation(
-        backend_url="http://localhost:11434",
-        model_name="llama3.2:latest",
-        conversations=conversations,
-        user_id=user_id,
-        summary_prompt=summary_prompt,
-        threshold=SUMMARIZE_THRESHOLD
-    )
+    # TO DO : Context window and summarization
 
 client.run(TOKEN)
