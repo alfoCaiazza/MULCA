@@ -23,6 +23,7 @@ def get_llm_response(backend_url: str, model_name: str, messages: list, stream: 
 
 def build_conversation_history(conversations: dict, user_id: int, new_message: str, system_prompt: str) -> list:
     history = list(conversations[user_id])
+
     messages = [{"role": "system", "content": system_prompt}] + history
     messages.append({"role": "user", "content": new_message})
     return messages
