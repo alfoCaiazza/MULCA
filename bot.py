@@ -1,27 +1,39 @@
 import os
 import discord
 from dotenv import load_dotenv
-from ask_llm import get_llm_response, build_conversation_history, summarize_conversation
-from collections import defaultdict, deque
+from ask_llm import get_llm_response
 import redis
 import json
+import time
 
 load_dotenv()
-TOKEN = os.getenv('DISCORD_TOKEN')
+TOKEN = os.getenv('BOTI_TOKEN')
 
 # Redis init
-r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True, max_connections=3)
 
 intents = discord.Intents.default()
 intents.message_content = True 
 client = discord.Client(intents=intents)
 
 # Bot prompts
-def get_personality_prompt(client):
-    return f"""You are a friendly AI assistant, {client.user},  that engages in casual conversation with users.
-            You are helpful, polite, and always try to provide useful information or assistance.
-            You have a good sense of humor and enjoy making the conversation enjoyable for the user.
-            Your goal is to create a short but engagin response to the user's message, keeping it as short as possible."""
+def get_personality_prompt(bot_name: str) -> str:
+    return f"""# ROLE: Act like {bot_name}, a Gen-Z teenager and life-time friend who always replies to chat messages.
+
+            # CONTEXT: You will receive an overview of the conversation history. Reply ONLY to the very last message, referencing previous information if necessary.
+
+            # INSTRUCTIONS: Your personality is highly sarcastic, witty, and funny. Use some Gen-Z slang, abbreviations (e.g., lol, rn, fr), and emojis. 
+
+            # CONSTRAINTS: 
+            - Output MUST be a single, short sentence.
+            - Do NOT add any formal explanations.
+            - Never exceed one sentence under any circumstance.
+
+            # OUTPUT: Return exactly one sentence."
+            """
+# Chat parameters
+bot_name = "Marco"
+chat_key = f"chat:hangout"
 
 @client.event
 async def on_ready():
@@ -33,8 +45,8 @@ async def on_message(message):
     if message.author == client.user:
         return  
     
-    personality = get_personality_prompt(client)
-    chat_key = f"chat:friends"
+    # personality = get_personality_prompt(client)
+    personality = get_personality_prompt(bot_name)
     
     # Retrieve all messages related to this chat from Redis (history)
     raw_history = r.lrange(chat_key, 0, -1)
@@ -43,16 +55,21 @@ async def on_message(message):
     # Initialization if first message
     if not messages:
         system_msg = {"role": "system", "content": personality}
+        messages.append(system_msg)
         r.rpush(chat_key, json.dumps(system_msg))
 
     # Add a new user message to the conversation
-    user_msg = {"role": "user", "content": message.content}
+    user_msg = {
+        "role": "user",
+        "content": message.content
+    }
+
     r.rpush(chat_key, json.dumps(user_msg))
     messages.append(user_msg)
 
     response = get_llm_response(
         backend_url="http://localhost:11434",
-        model_name="llama3.2:latest",
+        model_name="llama3.1:8b",
         messages = messages,
         stream=False
     )
@@ -62,8 +79,13 @@ async def on_message(message):
         return
 
     # Save bot response
-    bot_msg = {"role": "assistant", "content": response}
+    bot_msg = {
+        "role": "assistant",
+        "content": response
+    }
     r.rpush(chat_key, json.dumps(bot_msg))
+    
+    # time.sleep(1) Add a small delay to ensure readability during the conversation
     await message.channel.send(response)
 
     # TO DO : Context window and summarization
