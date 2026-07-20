@@ -5,12 +5,13 @@ from ask_llm import get_llm_response
 import redis
 import json
 import time
+import string
 
 load_dotenv()
 TOKEN = os.getenv('BOTII_TOKEN')
 
 # Redis init
-r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True, max_connections=3)
+r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
 
 intents = discord.Intents.default()
 intents.message_content = True 
@@ -22,7 +23,7 @@ def get_personality_prompt(bot_name: str) -> str:
 
             # CONTEXT: You will receive an overview of the conversation history. Reply ONLY to the very last message, referencing previous information if necessary.
 
-            # INSTRUCTIONS: Your personality is intelligent, with a unique sense of humor. You usually don't use any slang or emoji.
+            # INSTRUCTIONS: Your personality is highly sarcastic, witty, and funny. Use some Gen-Z slang, abbreviations (e.g., lol, rn, fr), and emojis. 
 
             # CONSTRAINTS: 
             - Output MUST be a single, short sentence.
@@ -31,9 +32,11 @@ def get_personality_prompt(bot_name: str) -> str:
 
             # OUTPUT: Return exactly one sentence."
             """
+
 # Chat parameters
 bot_name = "Giulia"
 chat_key = f"chat:hangout"
+chat_ids = f"chat:hangout:ids"
 
 @client.event
 async def on_ready():
@@ -45,48 +48,78 @@ async def on_message(message):
     if message.author == client.user:
         return  
     
+    # Ignores if message already registered
+    msg_id_str = str(message.id)
+    is_new = r.sadd(chat_ids, msg_id_str)
+    if not is_new:
+        return
+    
     # personality = get_personality_prompt(client)
     personality = get_personality_prompt(bot_name)
     
     # Retrieve all messages related to this chat from Redis (history)
     raw_history = r.lrange(chat_key, 0, -1)
-    messages = [json.loads(msg) for msg in raw_history]
+    raw_messages = [json.loads(msg) for msg in raw_history]
 
-    # Initialization if first message
-    if not messages:
-        system_msg = {"role": "system", "content": personality}
-        messages.append(system_msg)
-        r.rpush(chat_key, json.dumps(system_msg))
+    # Translating history from the POV of the actual bot
+    llm_messages =[{
+        "role": "system",
+        "content": personality # Injecting bot personality
+    }]
+
+    for msg in raw_messages:
+        user = msg["user"]
+        content = msg["content"]
+
+        if user == bot_name:
+            llm_messages.append({
+                "role" : "assistant",
+                "content" : content
+            })
+        else:
+            llm_messages.append({
+                "role" : "user",
+                "content" : f"[{user.upper()} : {content}]"
+            })
+
 
     # Add a new user message to the conversation
-    user_msg = {
-        "role": "user",
-        "content": message.content
+    r_msg = {
+        "id" : str(message.id),
+        "user" : message.author.name,
+        "content" : message.content
     }
 
-    r.rpush(chat_key, json.dumps(user_msg))
-    messages.append(user_msg)
+    user_msg = {
+        "role": "user",
+        "content": f"{message.author.name} : {message.content}"
+    }
+
+    r.rpush(chat_key, json.dumps(r_msg))
+    llm_messages.append(user_msg)
 
     response = get_llm_response(
         backend_url="http://localhost:11434",
         model_name="llama3.1:8b",
-        messages = messages,
-        stream=False
+        messages = llm_messages
     )
 
     if not response:
         await message.channel.send("Sorry, I couldn't generate a response at the moment. Please try again later.")
         return
-
+    
+    msg_sent = await message.channel.send(response)
+    msg_sent_id_str = str(msg_sent.id)
+    r.sadd(chat_ids, msg_sent_id_str)
+    
     # Save bot response
     bot_msg = {
-        "role": "assistant",
+        "id" : str(msg_sent.id),
+        "user" : bot_name,
         "content": response
     }
+
     r.rpush(chat_key, json.dumps(bot_msg))
-    
-    # time.sleep(1) Add a small delay to ensure readability during the conversation
-    await message.channel.send(response)
 
     # TO DO : Context window and summarization
 
