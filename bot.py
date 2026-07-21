@@ -6,6 +6,8 @@ import redis
 import json
 import time
 import string
+import asyncio
+import re
 
 load_dotenv()
 TOKEN = os.getenv('BOTI_TOKEN')
@@ -23,7 +25,7 @@ def get_personality_prompt(bot_name: str) -> str:
 
             # CONTEXT: You will receive an overview of the conversation history. Reply ONLY to the very last message, referencing previous information if necessary.
 
-            # INSTRUCTIONS: Your personality is highly sarcastic, witty, and funny. Use some Gen-Z slang, abbreviations (e.g., lol, rn, fr), and emojis. 
+            # INSTRUCTIONS: You have a highly sarcastic and witty personality, with the same temper of a rebel teenager. Use some Gen-Z slang, abbreviations and emojis. 
 
             # CONSTRAINTS: 
             - Output MUST be a single, short sentence.
@@ -37,10 +39,17 @@ def get_personality_prompt(bot_name: str) -> str:
 bot_name = "Marco"
 chat_key = f"chat:hangout"
 chat_ids = f"chat:hangout:ids"
+chat_personalities = f"chat:hangout:personalities"
 
 @client.event
 async def on_ready():
     print(f"Bot connected as : {client.user}")
+
+    # Register bot personality if not in chat database
+    personality_desc = "A highly sarcastic and witty Gen-Z teenager who loves slang and emojis."
+
+    r.hset(chat_personalities, bot_name, personality_desc)
+    print(f"Personality correctly registered in Redis.")
 
 @client.event
 async def on_message(message):
@@ -81,17 +90,21 @@ async def on_message(message):
     r.rpush(chat_key, json.dumps(r_msg))
     llm_messages.append(user_msg)
 
-    response = get_llm_response(
-        backend_url="http://localhost:11434",
-        model_name="llama3.1:8b",
-        messages = llm_messages
-    )
+    async with message.channel.typing():
 
-    if not response:
-        await message.channel.send("Sorry, I couldn't generate a response at the moment. Please try again later.")
-        return
-    
-    msg_sent = await message.channel.send(response)
+        response = get_llm_response(
+            backend_url="http://localhost:11434",
+            model_name="llama3.1:8b",
+            messages = llm_messages
+        )
+
+        if not response:
+            await message.channel.send("Sorry, I couldn't generate a response at the moment. Please try again later.")
+            return
+        
+        await asyncio.sleep(1)
+        msg_sent = await message.channel.send(response)
+
     msg_sent_id_str = str(msg_sent.id)
     r.sadd(chat_ids, msg_sent_id_str)
     
