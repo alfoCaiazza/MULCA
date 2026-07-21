@@ -1,7 +1,7 @@
 import os
 import discord
 from dotenv import load_dotenv
-from ask_llm import get_llm_response
+from ask_llm import get_llm_response, translate_messages
 import redis
 import json
 import time
@@ -19,7 +19,7 @@ client = discord.Client(intents=intents)
 
 # Bot prompts
 def get_personality_prompt(bot_name: str) -> str:
-    return f"""# ROLE: Act like {bot_name}, a Gen-Z teenager and life-time friend who always replies to chat messages.
+    return f"""# ROLE: Act like {bot_name}, a Gen-Z teenager and life-time friend who always replies to the group chat messages.
 
             # CONTEXT: You will receive an overview of the conversation history. Reply ONLY to the very last message, referencing previous information if necessary.
 
@@ -49,6 +49,8 @@ async def on_message(message):
         return  
     
     # Ignores if message already registered
+    # IMPROVE : TURN TALKING or MENTION TALKING
+    # PRO-LEVEL : ORCHESTRATION
     msg_id_str = str(message.id)
     is_new = r.sadd(chat_ids, msg_id_str)
     if not is_new:
@@ -62,26 +64,7 @@ async def on_message(message):
     raw_messages = [json.loads(msg) for msg in raw_history]
 
     # Translating history from the POV of the actual bot
-    llm_messages =[{
-        "role": "system",
-        "content": personality # Injecting bot personality
-    }]
-
-    for msg in raw_messages:
-        user = msg["user"]
-        content = msg["content"]
-
-        if user == bot_name:
-            llm_messages.append({
-                "role" : "assistant",
-                "content" : content
-            })
-        else:
-            llm_messages.append({
-                "role" : "user",
-                "content" : f"[{user.upper()} : {content}]"
-            })
-
+    llm_messages = translate_messages(personality, bot_name, raw_messages)
 
     # Add a new user message to the conversation
     r_msg = {

@@ -46,3 +46,26 @@ def summarize_conversation(backend_url: str, model_name: str, conversations: dic
 
     # Replace history with a single summary message
     conversations[user_id] = deque( [{"role": "system", "content": f"Past conversation summary: {summary}"}],maxlen=conversations[user_id].maxlen)
+
+def translate_messages(bot_personality: str, bot_name: str, history: list) -> list:
+    llm_messages =[{
+        "role": "system",
+        "content": bot_personality # Injecting bot personality
+    }]
+
+    for msg in history:
+        user = msg["user"]
+        content = msg["content"]
+
+        if user == bot_name:
+            llm_messages.append({
+                "role" : "assistant",
+                "content" : content
+            })
+        else:
+            llm_messages.append({
+                "role" : "user",
+                "content" : f"[{user.upper()} : {content}]"
+            })
+
+    return llm_messages
