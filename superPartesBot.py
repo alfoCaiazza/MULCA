@@ -6,11 +6,6 @@ import json
 from dotenv import load_dotenv
 import re
 
-# Define a Super Partes Bot which:
-#  1 - read the messages just arrived in the channel
-#  2 - decide whose bot should respond to it based on their prompt personality
-#  3 - select the relative bot and send the messages to it
-
 load_dotenv()
 ORCHESTRATOR = os.getenv("ORCHESTRATOR")
 
@@ -22,6 +17,7 @@ client = discord.Client(intents=intents)
 
 chat_key = f"chat:hangout"
 chat_personalities = f"chat:hangout:personalities"
+signals_channel = "chat:hangout:signals"
 
 def super_partes_prompt(users_dict : dict[str, str]) -> str:
     participants = "\n".join(
@@ -41,7 +37,7 @@ def super_partes_prompt(users_dict : dict[str, str]) -> str:
         - Do not invent names outside the provided participants list.
         - Output MUST be concise and strictly follow the output format.
 
-    # OUTPUT: Return the name of the chosen user or [ALL] enclosed in brackets or a clear tag (e.g., <target>Marco</target> or [Marco])."""
+    # OUTPUT: Return the name of the chosen user or [ALL] enclosed in brackets (e.g., [Marco])."""
 
 
 @client.event
@@ -50,9 +46,6 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    if message.author == client.user:
-        return
-
     # Retrieve all personalities
     personalities = r.hgetall(chat_personalities)
     avaiable_users = list(personalities.keys())
@@ -60,14 +53,30 @@ async def on_message(message):
     # Check for connected bots
     if not avaiable_users:
         return
+
+    prompt = super_partes_prompt(personalities)
     
     # Retrieve all messages related to this chat from Redis (history)
     raw_history = r.lrange(chat_key, 0, -1)
     raw_messages = [json.loads(msg) for msg in raw_history]
 
-    prompt = super_partes_prompt(personalities)
-
+    # Translate history for the super partes llm
     llm_messages = translate_messages(prompt, None, raw_messages)
+
+    # Add the newest message to the conversation
+    r_msg = {
+        "id" : str(message.id),
+        "user" : message.author.name,
+        "content" : message.content
+    }
+
+    user_msg = {
+        "role": "user",
+        "content": f"{message.author.name} : {message.content}"
+    }
+
+    r.rpush(chat_key, json.dumps(r_msg))
+    llm_messages.append(user_msg)
 
     # Obtain Super Partes LLM response
     response = get_llm_response(
@@ -82,6 +91,13 @@ async def on_message(message):
         chosen_target = match.group(1)
         print(f"Target selected to reply: {chosen_target}")
 
-    await  message.channel.send(f"Super Partes verdict:\nThe one who has to respond is {chosen_target}")
+        # Send signal to the pub/sub system where all channel's bots are listening
+        signal_data = {
+            "target" : chosen_target.lower(),
+            "channel_id" : message.channel.id,
+            "trigger_msg_id" : str(message.id)
+        }
+
+        r.publish(signals_channel, json.dumps(signal_data))
 
 client.run(ORCHESTRATOR)
